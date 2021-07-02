@@ -44,7 +44,7 @@ impl Default for SpawnEnemies {
         SpawnEnemies {
             rows: 1,
             cols: 4,
-            center: Vec2::new(0.0, 100.0),
+            center: Vec2::new(0.0, 250.0),
             round: 1,
         }
     }
