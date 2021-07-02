@@ -1,5 +1,6 @@
-use crate::{collisions::*, AppState};
+use crate::{AppState, bullets::{Bullet, SpawnBulletEvent}, collisions::*};
 use bevy::{core::FixedTimestep, prelude::*};
+use rand::Rng;
 
 pub struct Enemies;
 
@@ -11,7 +12,8 @@ impl Plugin for Enemies {
             SystemSet::on_update(AppState::Game)
                 .with_system(kill_on_collision.system())
                 .with_system(round_over.system())
-                .with_system(spawn_enemies_on_event.system()),
+                .with_system(spawn_enemies_on_event.system())
+                .with_system(enemy_shooting.system()),
         )
         .add_system_set(
             SystemSet::on_update(AppState::Game)
@@ -26,7 +28,8 @@ impl Plugin for Enemies {
 /// Doing it this way because i dont know how to get the `Res<Assets<ColorMaterial>>` from the `AppBuilder`
 fn enemies_startup(mut coms: Commands, mut colors: ResMut<Assets<ColorMaterial>>) {
     let enemy_color = colors.add(Color::RED.into());
-    coms.insert_resource(DefaultEnemyColor(enemy_color));
+    let bullet_color = colors.add(Color::ORANGE_RED.into());
+    coms.insert_resource(DefaultEnemyColor(enemy_color, bullet_color));
     coms.insert_resource(SpawnEnemies::default());
 }
 
@@ -47,7 +50,8 @@ impl Default for SpawnEnemies {
     }
 }
 
-struct DefaultEnemyColor(Handle<ColorMaterial>);
+/// First color is enemy itself, second is the bullet
+struct DefaultEnemyColor(Handle<ColorMaterial>, Handle<ColorMaterial>);
 
 fn spawn_enemies_on_event(
     mut coms: Commands,
@@ -66,24 +70,50 @@ fn spawn_enemies_on_event(
 
         let start = spawn.center - Vec2::new(width, height) * 0.5;
 
+        // We gonna keep a vec of the entities so we could access them
+        // when we spawn an entity on the row beneath
+        let mut row_above : Vec<Entity> = Vec::with_capacity(spawn.cols as usize);
+        
         // #TheTrueRustWay
         (0..spawn.rows).for_each(|i| {
-            let i = i as f32;
+            let i = (spawn.rows - i -1) as f32; // we gonna spawn the bottom first
 
             (0..spawn.cols).for_each(|k| {
                 let k = k as f32;
 
                 let position = start + Vec2::new(k, i) * (enemy_size + spacing);
 
+
+                let mut rng = rand::thread_rng();
+
+                let cycle = ShootCycle {
+                    timer: rng.gen::<f32>() * 5.0,
+                    reset : rng.gen::<f32>() * 10.0 + 3.0,
+                };
+
                 // Spawn the enemy
-                coms.spawn_bundle(SpriteBundle {
+                let e = coms.spawn_bundle(SpriteBundle {
                     sprite: Sprite::new(enemy_size),
                     material: enemy_color.0.clone(),
                     transform: Transform::from_translation(position.extend(0.0)),
                     ..Default::default()
                 })
-                .insert(Enemy)
-                .insert(Aabb::new(enemy_size.extend(0.0) * 0.5));
+                .insert(Enemy::default())
+                .insert(Aabb::new(enemy_size.extend(0.0) * 0.5))
+                .insert(cycle)
+                .id()
+                ;
+
+                // try to get the entity above
+                if let Some(&above) = row_above.get(k as usize) {
+                    coms.entity(above).insert(Enemy { enemy_above : Some(e), hold_fire : true });
+                    // we know that we have a k position in row_above so we replace it
+                    row_above[k as usize] = e;
+                }
+                else {
+                    // no k position, we are probably(hopefully) only at the first line
+                    row_above.push(e);
+                }
             });
         });
         // Make the next wave harder
@@ -109,18 +139,50 @@ impl Default for EnemyControl {
         }
     }
 }
-pub struct Enemy;
+
+#[derive(Default, Debug, Clone, Reflect)]
+pub struct Enemy {
+    pub enemy_above : Option<Entity>,
+    pub hold_fire : bool
+}
+struct ShootCycle {
+    pub timer : f32,
+    pub reset : f32,
+}
 
 /// Kills `Enemy` entities on collision events
 fn kill_on_collision(
     mut coms: Commands,
-    enemies: Query<Entity, With<Enemy>>,
+    enemy_entities: Query<Entity, With<Enemy>>,
     mut colls: EventReader<Collision>,
+    mut enemies: Query<&mut Enemy>, // so we could tell the enemies to shoot once more
 ) {
     for c in colls.iter() {
-        if let Ok(e) = enemies.get(c.0) {
+        if let Ok(e) = enemy_entities.get(c.0) {
+            // Allow the one above to shoot pretty much
+            let above = match enemies.get_component::<Enemy>(e) {
+                Ok(enemy) => enemy.enemy_above,
+                Err(_) => None
+            };
+            if let Some(above) = above {
+                if let Ok(mut enemy) = enemies.get_mut(above) {
+                    enemy.hold_fire = false; // allow the one above to shoot
+                }
+            }
+
             coms.entity(e).despawn();
-        } else if let Ok(e) = enemies.get(c.1) {
+        } else if let Ok(e) = enemy_entities.get(c.1) {
+            // Allow the one above to shoot pretty much
+            let above = match enemies.get_component::<Enemy>(e) {
+                Ok(enemy) => enemy.enemy_above,
+                Err(_) => None
+            };
+            if let Some(above) = above {
+                if let Ok(mut enemy) = enemies.get_mut(above) {
+                    enemy.hold_fire = false; // allow the one above to shoot
+                }
+            }
+
             coms.entity(e).despawn();
         }
     }
@@ -181,6 +243,37 @@ fn enemy_movement(
                 println!("Game over");
                 state.set(AppState::Menu).unwrap();
                 return;
+            }
+        }
+    }
+}
+
+fn enemy_shooting(
+    time: Res<Time>,
+    enemy_colors : Res<DefaultEnemyColor>,
+    mut query: Query<(&Enemy, &Transform, &mut ShootCycle)>,
+    mut writer: EventWriter<SpawnBulletEvent>,
+) {
+    let delta = time.delta_seconds();
+
+    for (e, t, mut cycle) in query.iter_mut() {
+        if !e.hold_fire {
+            cycle.timer -= delta;
+            if cycle.timer <= 0.0 {
+                cycle.timer = cycle.reset;
+                // spawn a bullet for me
+
+                let bullet = Bullet { speed : Vec2::new(0.0,-90.0) };
+                let position = Vec2::new(t.translation.x, t.translation.y);
+                let position = position + Vec2::new(0.0, -25.0);
+
+
+                writer.send(SpawnBulletEvent {
+                    bullet,
+                    position,
+                    color: enemy_colors.1.clone(),
+                    size: Vec2::splat(10.0),
+                })
             }
         }
     }
