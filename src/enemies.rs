@@ -87,8 +87,8 @@ fn spawn_enemies_on_event(
                 let mut rng = rand::thread_rng();
 
                 let cycle = ShootCycle {
-                    timer: rng.gen::<f32>() * 5.0,
-                    reset : rng.gen::<f32>() * 10.0 + 3.0,
+                    timer: rng.gen::<f32>() * 10.0,
+                    reset : rng.gen::<f32>() * 15.0 + 3.0,
                 };
 
                 // Spawn the enemy

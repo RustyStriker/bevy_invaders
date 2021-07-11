@@ -15,14 +15,14 @@ struct MenuItem;
 
 fn setup_menu(mut coms: Commands, asset_server: Res<AssetServer>) {
     let text_style = TextStyle {
-        font: asset_server.load("fonts/FiraSans-Bold.ttf"),
+        font: asset_server.load("fonts/kenney_future_narrow.ttf"),
         font_size: 32.0,
         color: Color::WHITE,
     };
 
     coms.spawn_bundle(TextBundle {
         text: Text::with_section(
-            "Press `Space` to start",
+            " Press `Space` to start",
             text_style,
             TextAlignment::default(),
         ),
